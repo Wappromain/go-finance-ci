@@ -1,0 +1,108 @@
+name: CI
+
+# Runs whenever code, tests, or dependencies change, and on demand.
+on:
+  push:
+    branches: ["**"]
+    paths:
+      - "**.go"
+      - "go.mod"
+      - "go.sum"
+      - "Makefile"
+      - ".github/workflows/ci.yml"
+  pull_request:
+    paths:
+      - "**.go"
+      - "go.mod"
+      - "go.sum"
+      - "Makefile"
+      - ".github/workflows/ci.yml"
+  workflow_dispatch: # "Run workflow" button in the Actions tab
+
+# Cancel an older run on the same branch when a newer commit arrives.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Format and vet
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Verify dependencies
+        run: |
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum || (echo "::error::go.mod is not tidy, run 'go mod tidy'" && exit 1)
+
+      - name: Check formatting
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "::error::These files need gofmt:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: Vet
+        run: go vet ./...
+
+  test:
+    name: Test (Go ${{ matrix.go }} on ${{ matrix.os }})
+    needs: lint
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        go: ["1.24", "stable"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go }}
+
+      - name: Run tests
+        run: go test -race -count=1 -coverprofile coverage.out ./...
+
+      - name: Coverage summary
+        if: matrix.os == 'ubuntu-latest' && matrix.go == 'stable'
+        shell: bash
+        run: |
+          echo '### Test coverage' >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          go tool cover -func coverage.out >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+  build:
+    name: Build binary
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build
+        run: go build -o bin/fincalc ./cmd/fincalc
+
+      - name: Smoke test the binary
+        run: ./bin/fincalc loan -principal 25000 -rate 0.045 -months 60
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: fincalc-linux-amd64
+          path: bin/fincalc
+          retention-days: 7
