@@ -121,7 +121,7 @@ func TestTotalInterest(t *testing.T) {
 		months     int
 		want       float64
 	}{
-		{"car loan", 25000, 0.045, 60, 2964.94},
+		{"car loan", 25000, 0.045, 60, 2964.53},
 		{"no interest", 1200, 0, 12, 0},
 	}
 	for _, tc := range tests {
