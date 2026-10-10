@@ -1,6 +1,6 @@
 # go-finance-ci
 
-![CI](https://github.com/<your-username>/go-finance-ci/actions/workflows/ci.yml/badge.svg)
+![CI](https://github.com/<Wappromain>/go-finance-ci/actions/workflows/ci.yml/badge.svg)
 
 A small Go library and command line tool for personal finance calculations (loan payments, amortization schedules, savings projections), built with test driven development and checked by a GitHub Actions workflow on every change. It is the foundation repository for this semester's assignments.
 
@@ -39,7 +39,7 @@ go-finance-ci/
 ## Getting started
 
 ```bash
-git clone https://github.com/<your-username>/go-finance-ci.git
+git clone https://github.com/<Wappromain>/go-finance-ci.git
 cd go-finance-ci
 go mod download        # fetch dependencies (none yet beyond the standard library)
 go test ./...          # run every test
