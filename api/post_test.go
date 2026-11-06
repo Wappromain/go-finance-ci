@@ -35,3 +35,29 @@ func TestCreateLoanReturns201(t *testing.T) {
 		t.Errorf("MonthlyPayment = %.2f, want 466.08", got.MonthlyPayment)
 	}
 }
+
+func TestCreateLoanRejectsBadInput(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{"not json", `hello`},
+		{"zero principal", `{"principal": 0, "rate": 0.05, "months": 12}`},
+		{"negative rate", `{"principal": 1000, "rate": -0.05, "months": 12}`},
+		{"zero months", `{"principal": 1000, "rate": 0.05, "months": 0}`},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := NewServer()
+			req := httptest.NewRequest(http.MethodPost, "/loans", strings.NewReader(tc.body))
+			rec := httptest.NewRecorder()
+
+			srv.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusBadRequest {
+				t.Errorf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+			}
+		})
+	}
+}

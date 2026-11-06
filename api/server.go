@@ -5,17 +5,11 @@ import (
 	"net/http"
 	"sync"
 
-	"github.com/patrick/go-finance-ci/loan"
+	"github.com/patrick/go-finance-ci/loan" // calculator package
 )
 
-// Server holds the router (and, later, the stored loans).
-type Server struct {
-	mux    *http.ServeMux
-	mu     sync.Mutex   // a lock; see the note below
-	loans  map[int]Loan // ID → loan
-	nextID int
-}
-
+// The shape of a loan, in Go and in JSON.
+// The `json:"..."` tags set the field names clients see.
 type Loan struct {
 	ID             int     `json:"id"`
 	Principal      float64 `json:"principal"`
@@ -24,37 +18,19 @@ type Loan struct {
 	MonthlyPayment float64 `json:"monthly_payment"`
 }
 
-func writeJSON(w http.ResponseWriter, status int, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(v)
+// The server now remembers loans.
+type Server struct {
+	mux    *http.ServeMux
+	mu     sync.Mutex   // makes simultaneous requests take turns with the map
+	loans  map[int]Loan // ID → loan
+	nextID int          // the ID the next new loan gets
 }
 
-func (s *Server) createLoan(w http.ResponseWriter, r *http.Request) {
-	var in Loan
-	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
-		return
-	}
-	pmt, err := loan.MonthlyPayment(in.Principal, in.Rate, in.Months)
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-		return
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock() // unlock automatically when the function ends
-	in.ID = s.nextID
-	s.nextID++
-	in.MonthlyPayment = pmt
-	s.loans[in.ID] = in
-	writeJSON(w, http.StatusCreated, in)
-}
-
-// NewServer builds a Server and registers its routes.
+// Set up empty storage and register both routes.
 func NewServer() *Server {
 	s := &Server{
 		mux:    http.NewServeMux(),
-		loans:  make(map[int]Loan),
+		loans:  make(map[int]Loan), // a map must be made before use
 		nextID: 1,
 	}
 	s.mux.HandleFunc("GET /loans", s.listLoans)
@@ -62,14 +38,53 @@ func NewServer() *Server {
 	return s
 }
 
-// ServeHTTP makes Server an http.Handler, so tests and the real
-// server can both use it.
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.mux.ServeHTTP(w, r)
 }
 
+// One helper for every JSON response: header, status, body.
+func writeJSON(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	json.NewEncoder(w).Encode(v)
+}
+
+// List every stored loan.
 func (s *Server) listLoans(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json") // 5: tell the client it's JSON
-	w.WriteHeader(http.StatusOK)                       // 6: status 200
-	json.NewEncoder(w).Encode([]string{})
+	s.mu.Lock()
+	defer s.mu.Unlock() // "defer" = run this when the function returns
+
+	list := make([]Loan, 0, len(s.loans)) // empty slice, not nil, so JSON is [] not null
+	for _, l := range s.loans {
+		list = append(list, l)
+	}
+	writeJSON(w, http.StatusOK, list)
+}
+
+// Create a loan from the request body.
+func (s *Server) createLoan(w http.ResponseWriter, r *http.Request) {
+	// Read the JSON body into a Loan.
+	var in Loan
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
+		return // stop here; don't save anything
+	}
+
+	// Let the loan package validate and calculate.
+	pmt, err := loan.MonthlyPayment(in.Principal, in.Rate, in.Months)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+
+	// Save it with a fresh ID.
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	in.ID = s.nextID
+	s.nextID++
+	in.MonthlyPayment = pmt
+	s.loans[in.ID] = in
+
+	// Reply 201 Created with the saved loan.
+	writeJSON(w, http.StatusCreated, in)
 }
