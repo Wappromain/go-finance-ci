@@ -1,0 +1,4 @@
+# Keep Unix line endings in shell scripts and Dockerfiles, even on Windows,
+# so they run correctly inside Linux containers and CI.
+*.sh text eol=lf
+Dockerfile* text eol=lf
