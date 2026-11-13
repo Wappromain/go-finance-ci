@@ -1,0 +1,24 @@
+# Runs the loan REST API until manually stopped.
+#   docker build -f Dockerfile.api -t loan-api .
+#   docker run --rm -p 8080:8080 loan-api
+
+# ---- Stage 1: compile ----
+FROM golang:1.24 AS build
+WORKDIR /src
+
+# Copy dependency files first so Docker can cache the download step.
+COPY go.mod go.sum* ./
+RUN go mod download
+
+COPY . .
+# CGO_ENABLED=0 makes a static binary that runs in a minimal image.
+RUN CGO_ENABLED=0 go build -o /out/server ./cmd/server
+
+# ---- Stage 2: run ----
+# distroless has no shell or package manager: small and hard to attack.
+FROM gcr.io/distroless/static-debian12:nonroot
+COPY --from=build /out/server /server
+ENV PORT=8080
+EXPOSE 8080
+USER nonroot:nonroot
+ENTRYPOINT ["/server"]

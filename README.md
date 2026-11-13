@@ -1,127 +1,232 @@
 # go-finance-ci
 
-![CI](https://github.com/<Wappromain>/go-finance-ci/actions/workflows/ci.yml/badge.svg)
+![CI](https://github.com/<your-username>/go-finance-ci/actions/workflows/ci.yml/badge.svg)
+![API tests](https://github.com/<your-username>/go-finance-ci/actions/workflows/api.yml/badge.svg)
 
-A small Go library and command line tool for personal finance calculations (loan payments, amortization schedules, savings projections), built with test driven development and checked by a GitHub Actions workflow on every change. It is the foundation repository for this semester's assignments.
+A Go library, command line tool and REST API for personal finance calculations (loan payments, amortization schedules, savings projections). It is built with test driven development, packaged with Docker, and checked by GitHub Actions on every change, with results posted to Slack. It is the foundation repository for this semester's assignments.
 
-## What the code does
+## Contents
 
-| Package | Function | Purpose |
-|---|---|---|
-| `loan` | `MonthlyPayment` | Fixed monthly payment for an amortizing loan |
-| `loan` | `Schedule` | Month by month split of principal, interest and remaining balance |
-| `loan` | `TotalInterest` | Total interest paid over the life of the loan |
-| `savings` | `FutureValue` | Balance after N months of deposits with monthly compounding |
-| `savings` | `MonthsToGoal` | Months needed to reach a savings target |
-| `cmd/fincalc` | `fincalc` | Command line front end for all of the above |
-
-Every function validates its input and returns a typed error (for example `loan.ErrInvalidPrincipal`) instead of producing nonsense numbers.
+* [Repository layout](#repository-layout)
+* [Prerequisites](#prerequisites)
+* [REST API](#rest-api)
+* [Running the API and tests with Docker](#running-the-api-and-tests-with-docker)
+* [Running without Docker](#running-without-docker)
+* [Continuous integration](#continuous-integration)
+* [Slack notifications](#slack-notifications)
+* [Command line calculator](#command-line-calculator)
+* [Test driven development workflow](#test-driven-development-workflow)
 
 ## Repository layout
 
 ```
 go-finance-ci/
-├── .github/workflows/ci.yml   # CI pipeline
-├── cmd/fincalc/               # CLI (main.go, main_test.go)
-├── loan/                      # loan package and tests
-├── savings/                   # savings package and tests
-├── go.mod                     # module and Go version (dependency management)
-├── Makefile                   # shortcuts for common commands
-└── README.md
+├── .github/workflows/
+│   ├── ci.yml              # lint, test matrix, CLI build (assignment 1)
+│   └── api.yml             # Docker tests, API image check, Slack summary
+├── api/                    # REST API handlers and their tests
+├── cmd/
+│   ├── server/             # starts the REST API
+│   └── fincalc/            # command line calculator
+├── loan/                   # loan calculations and tests
+├── savings/                # savings calculations and tests
+├── scripts/
+│   ├── run_api.sh          # build + run the API container until stopped
+│   ├── run_tests.sh        # build + run the test container, exit 0/non zero
+│   └── notify_slack.sh     # post a workflow summary to Slack
+├── Dockerfile.api          # image that runs the API
+├── Dockerfile.test         # image that runs the tests
+├── go.mod                  # module and Go version (dependency management)
+└── Makefile
 ```
 
 ## Prerequisites
 
-* Go 1.24 or newer ([download](https://go.dev/dl/)). Check with `go version`.
+* [Docker](https://docs.docker.com/get-docker/) (Docker Desktop on Windows or macOS). This is all you need to run the API and the tests.
 * Git
-* `make` (optional; every Make target has a plain `go` equivalent below)
+* Optional, to run without Docker: Go 1.24 or newer
+* On Windows, run the scripts from Git Bash or WSL.
 
-## Getting started
+## REST API
 
-```bash
-git clone https://github.com/<Wappromain>/go-finance-ci.git
-cd go-finance-ci
-go mod download        # fetch dependencies (none yet beyond the standard library)
-go test ./...          # run every test
-```
+The API manages loans in memory. Every saved loan includes its monthly payment, calculated by the `loan` package and rounded to cents. Data resets when the server restarts.
 
-## Running the tests
+### Endpoints
 
-| Task | With Make | Plain Go |
-|---|---|---|
-| Run all tests (with race detector) | `make test` | `go test -race -count=1 ./...` |
-| Verbose output | | `go test -v ./...` |
-| One package | | `go test ./loan` |
-| One test | | `go test ./loan -run TestMonthlyPayment` |
-| Coverage report | `make cover` | `go test -coverprofile=coverage.out ./... && go tool cover -func=coverage.out` |
-| Coverage in browser | | `go tool cover -html=coverage.out` |
-| Format and static checks | `make fmt vet` | `gofmt -l -w . && go vet ./...` |
-| Everything CI runs | `make all` | |
+| Method | Path | Success | Errors |
+|---|---|---|---|
+| `GET` | `/loans` | `200` list of all loans | none |
+| `POST` | `/loans` | `201` the created loan | `400` invalid JSON or values |
+| `GET` | `/loans/{id}` | `200` the loan | `400` id not a number, `404` not found |
+| `PUT` | `/loans/{id}` | `200` the replaced loan | `400` bad id, JSON or values, `404` not found |
+| `DELETE` | `/loans/{id}` | `204` no body | `400` id not a number, `404` not found |
 
-Note: the `-race` flag needs cgo. If it errors on your machine, drop it.
+Any other method on these paths returns `405 Method Not Allowed`.
 
-## Running the program
+### Loan fields
 
-Build the binary:
+| Field | Type | Sent by client | Rules |
+|---|---|---|---|
+| `id` | integer | no, assigned by the server | |
+| `principal` | number | yes | greater than 0 |
+| `rate` | number | yes | annual rate as a decimal (`0.045` = 4.5%), not negative |
+| `months` | integer | yes | at least 1 |
+| `monthly_payment` | number | no, calculated | |
 
-```bash
-make build                         # or: go build -o bin/fincalc ./cmd/fincalc
-```
+Errors return JSON such as `{"error": "loan not found"}`.
 
-Or run without building using `go run ./cmd/fincalc ...`.
+### Example session
 
-Rates are decimals: `0.045` means 4.5%.
+With the API running on port 8080:
 
 ```bash
-# Monthly payment for a $25,000, 5 year car loan at 4.5%
-./bin/fincalc loan -principal 25000 -rate 0.045 -months 60
-# Monthly payment: $466.08
-# Total interest:  $2964.53
-# Total paid:      $27964.53
+# Create (201)
+curl -i -X POST localhost:8080/loans \
+  -d '{"principal": 25000, "rate": 0.045, "months": 60}'
+# {"id":1,"principal":25000,"rate":0.045,"months":60,"monthly_payment":466.08}
 
-# Add -schedule to print the full amortization table
-./bin/fincalc loan -principal 1200 -rate 0.06 -months 3 -schedule
+# Read all (200), read one (200)
+curl -i localhost:8080/loans
+curl -i localhost:8080/loans/1
 
-# Project savings: $500 to start, $100 a month, 5% for 2 years
-./bin/fincalc savings -start 500 -monthly 100 -rate 0.05 -months 24
-# Balance after 24 months: $3071.06
+# Replace (200)
+curl -i -X PUT localhost:8080/loans/1 \
+  -d '{"principal": 1200, "rate": 0, "months": 12}'
+# {"id":1,"principal":1200,"rate":0,"months":12,"monthly_payment":100}
 
-# How long to save $5,000 at $150 a month and 4%?
-./bin/fincalc goal -monthly 150 -rate 0.04 -goal 5000
-# Months to reach $5000.00: 32
+# Delete (204), then it is gone (404)
+curl -i -X DELETE localhost:8080/loans/1
+curl -i localhost:8080/loans/1
 ```
 
-Use `./bin/fincalc <command> -h` to list the flags for any command. Invalid input exits with status 1 and an error message.
+`-i` prints the status line, so you can see each status code.
+
+## Running the API and tests with Docker
+
+Each script builds its image and runs it, so a single command does everything. Run them from the repository root.
+
+### Run the API (until you stop it)
+
+```bash
+./scripts/run_api.sh              # http://localhost:8080
+PORT=9000 ./scripts/run_api.sh    # http://localhost:9000
+```
+
+Press **Ctrl+C** to stop. The server shuts down cleanly and the container is removed.
+
+Equivalent manual commands:
+
+```bash
+docker build -f Dockerfile.api -t loan-api .
+docker run --rm -p 8080:8080 loan-api
+```
+
+`Dockerfile.api` is a two stage build. A full Go image compiles a static binary, which is then copied into a minimal distroless image that runs as a non root user, with no shell and no compiler.
+
+### Run the tests (exits when done)
+
+```bash
+./scripts/run_tests.sh
+echo $?     # 0 = all tests passed, non zero = at least one failed
+```
+
+Equivalent manual commands:
+
+```bash
+docker build -f Dockerfile.test -t loan-api-test .
+docker run --rm loan-api-test
+```
+
+`Dockerfile.test` runs `go test -v -race ./...` as its command. `go test` exits non zero if any test fails, `docker run` passes that exit status through, and the script (with `set -e`) returns it as its own.
+
+If you get `permission denied` running a script, either run it with `bash scripts/run_tests.sh` or make it executable with `chmod +x scripts/*.sh`.
+
+## Running without Docker
+
+Requires Go 1.24+.
+
+```bash
+go run ./cmd/server                 # API on :8080 (PORT=9000 to change)
+go test ./...                       # all tests
+go test ./api -v                    # API tests only, verbose
+go test ./api -run TestDeleteLoan   # one group of tests
+make all                            # format, vet, test, build the CLI
+```
 
 ## Continuous integration
 
-The workflow in `.github/workflows/ci.yml` runs automatically when anyone pushes or opens a pull request that touches Go code, tests, `go.mod`/`go.sum`, the Makefile, or the workflow itself. Changes to documentation alone do not trigger it.
+There are two workflows. Both run on pushes and pull requests that change relevant files, and both can be started manually from **Actions → (workflow) → Run workflow**.
 
-To run it on demand: open the **Actions** tab, select **CI**, then **Run workflow**.
+### `api.yml`: Docker tests and Slack
 
-The pipeline has three stages. Each must pass before the next one starts, so a failure stops the pipeline and reports back on the commit or pull request.
+Runs when Go code, `go.mod`/`go.sum`, either Dockerfile, anything in `scripts/`, or the workflow itself changes.
 
-1. **Format and vet**: confirms `go.mod` is tidy, every file is `gofmt` formatted, and `go vet` finds no suspicious code.
-2. **Test**: runs the full suite with the race detector on Linux, macOS and Windows, against both the minimum supported Go version (1.24) and the latest stable release. The Linux stable run posts a coverage table to the run summary.
-3. **Build**: compiles `fincalc`, smoke tests it with a real command, and uploads the binary as a downloadable artifact (kept 7 days). This is the continuous delivery step: every passing commit produces a release ready binary.
+| Job | What it does |
+|---|---|
+| **Run tests in Docker** | Runs `scripts/run_tests.sh`, the same command you run locally, so CI tests exactly what you test. It counts passing and failing tests and writes a results table to the run summary. |
+| **Build and smoke test API image** | Builds `Dockerfile.api`, starts the container, and sends a real request with every verb, checking each status code (201, 200, 200, 200, 204, 404). |
+| **Post summary to Slack** | Runs after both jobs, **whether they passed or failed**, and posts the overall status to Slack. |
 
-Recommended repository setting: under **Settings → Branches**, add a protection rule on `main` that requires the CI checks to pass before merging.
+### `ci.yml`: library checks
+
+Checks formatting and `go vet`, runs the tests on Linux, macOS and Windows against Go 1.24 and the latest stable release, and builds the CLI binary.
+
+## Slack notifications
+
+After each `api.yml` run, a message like this is posted:
+
+> ✅ **API tests passed**
+> **Repository** patrick/go-finance-ci  **Branch** main
+> **Commit** a1b2c3d feat(api): add PUT and DELETE
+> **Triggered by** patrick (push)
+> **Tests (Docker)** ✅ success (24 passed, 0 failed)  **API image** ✅ success
+> [View workflow run]
+
+### Setup (one time)
+
+1. **Create a Slack app with an incoming webhook**
+   * Go to <https://api.slack.com/apps>, choose **Create New App → From scratch**, give it a name (for example *CI Bot*) and pick your workspace.
+   * Open **Incoming Webhooks**, switch it **On**, then click **Add New Webhook to Workspace**, choose the channel, and click **Allow**.
+   * Copy the webhook URL (`https://hooks.slack.com/services/...`).
+2. **Store it as a GitHub secret.** Never commit it, because anyone with the URL can post to your channel.
+   * Repository **Settings → Secrets and variables → Actions → New repository secret**
+   * Name: `SLACK_WEBHOOK_URL`, Value: the URL.
+3. **Trigger a run** from Actions → API tests → Run workflow, and check the channel.
+
+If the secret is missing, the notify job logs a warning and succeeds, so forks and new clones don't fail.
+
+### Test the message from your machine
+
+```bash
+SLACK_WEBHOOK_URL='https://hooks.slack.com/services/...' ./scripts/notify_slack.sh
+```
+
+The script uses `curl` and `jq`, and builds the message JSON with `jq` so quotes or symbols in commit messages can't break it.
+
+## Command line calculator
+
+```bash
+go build -o bin/fincalc ./cmd/fincalc
+./bin/fincalc loan -principal 25000 -rate 0.045 -months 60 [-schedule]
+./bin/fincalc savings -start 500 -monthly 100 -rate 0.05 -months 24
+./bin/fincalc goal -monthly 150 -rate 0.04 -goal 5000
+```
 
 ## Test driven development workflow
 
-The commit history shows the cycle this project follows:
+Each feature was written as **red → green → refactor**:
 
-1. **Red**: write a test describing the new behavior, run `go test ./...`, and watch it fail.
-2. **Green**: write the smallest amount of code that makes it pass.
-3. **Refactor**: clean up with the tests as a safety net, then push and let CI confirm.
+1. **Red:** write a test for the new behavior and watch it fail.
+2. **Green:** write the smallest amount of code that makes it pass.
+3. **Refactor:** clean up with the tests as a safety net, then push and let CI confirm.
 
-Tests are table driven: each test function holds a slice of named cases, so adding a scenario is one line. For example, to cover a new loan case, add a row to `TestMonthlyPayment` in `loan/loan_test.go`:
+The API was built one verb at a time in this order: `GET /loans`, `POST`, `GET /loans/{id}`, then `PUT` and `DELETE`. Each verb's tests were committed before or with its implementation. Tests use `net/http/httptest`, which sends requests straight to the handler without starting a real server, so the full suite runs in milliseconds.
+
+Most tests are table driven: each test function holds a list of named cases, so a new scenario is one new row. For example, to check that a negative principal is rejected on update, add this row to `TestUpdateLoanErrors` in `api/update_delete_test.go`:
 
 ```go
-{"student loan", 30000, 0.055, 120, 325.58},
+{"negative principal", "/loans/1", `{"principal": -5, "rate": 0.05, "months": 12}`, http.StatusBadRequest},
 ```
-
-The first commit in this repository contains only tests (red); the second adds the implementation (green). During that step one expected value turned out to be wrong because it had been hand calculated from a rounded payment. The test was corrected rather than the code, which is a normal part of TDD: the tests are a specification and are checked as carefully as the code.
 
 ## License
 
